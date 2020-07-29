@@ -183,9 +183,9 @@ class TemporalConvNet(nn.Module):
         return self.network(x)
 
 
-class DFCNN_TCN(nn.Module):
+class DFCNN_LSTM(nn.Module):
     def __init__(self, nclass=11, dropout=0.8, nHidden=256, mode='small', width_mult=1.0):
-        super(DFCNN_TCN, self).__init__()
+        super(DFCNN_LSTM, self).__init__()
         input_channel = 16
         last_channel = 1280
         if mode == 'large':
@@ -255,32 +255,35 @@ class DFCNN_TCN(nn.Module):
 
         # make it nn.Sequential
         self.cnn = nn.Sequential(*cnn)
-        self.tcn = TemporalConvNet(last_conv, [nHidden] * 16, kernel_size=2, dropout=0.2)
-        self.fc1 = nn.Linear(nHidden, 256)
-        self.dropout1 = nn.Dropout(p=0.5)
-        self.fc2 = nn.Linear(256, nclass)
-        self.dropout2 = nn.Dropout(p=0.5)
+        self.rnn1 = nn.LSTM(last_conv, nHidden, bidirectional=True, batch_first=True)
+        self.fc1 = nn.Linear(nHidden*2, nHidden)
+        self.dropout = nn.Dropout(p=0.5)
+        self.fc2 = nn.Linear(nHidden, nclass)
 
     def forward(self, input):
         # conv features
         conv = self.cnn(input)
         b, c, h, w = conv.size()
-        print(b, c, h, w)
+        # print(b, c, h, w)
         assert h == 1, "the height of conv must be 1"
         output = conv.squeeze(2) # b, channel, w
+        output = output.permute(0, 2, 1)
         # 1
-        recurrent = self.tcn(output) # [b, channel, t]
-        x = recurrent[:, :, -1]
-        x = self.dropout1(x)
-        x = self.fc1(x)
-        x = self.dropout2(x)
+        recurrent, _ = self.rnn1(output) # [b, t, h]
+        b, T, h = recurrent.size()
+        t_rec = recurrent.contiguous().view(b * T, h)
+
+        x = self.fc1(t_rec)
+        x = x.view(b, T, -1)
+        x = x[:, -1, :]
+        x = self.dropout(x)
         x = self.fc2(x)
         return x
 
 
 if __name__ == '__main__':
     import numpy as np
-    dfcnn_tcn = DFCNN_TCN(nclass=6)
-    dfcnn_tcn.eval()
-    x = dfcnn_tcn(torch.from_numpy(np.zeros((10, 1, 200, 300), dtype=np.float32)))
+    dfcnn_lstm = DFCNN_LSTM(nclass=6)
+    dfcnn_lstm.eval()
+    x = dfcnn_lstm(torch.from_numpy(np.zeros((10, 1, 200, 300), dtype=np.float32)))
     print(x.shape)

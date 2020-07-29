@@ -1,11 +1,10 @@
-import os
-import logging
+from __future__ import print_function, division, absolute_import
 import argparse
+import os
 import shutil
 import time
 import numpy as np
 import pickle
-from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -14,20 +13,37 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
-import torchvision.models as models
 import torchvision.datasets as datasets
 import torch.nn.functional as F
 
+import sys
+
+sys.path.append('.')
+import pretrainedmodels
+import pretrainedmodels.utils
+
 import utils
 from data import WavDataset, WavTestDataset
-from models import DFCNN_TCN, DFCNN_LSTM
+from models import DFCNN_TCN
+# from efficientnet_pytorch import EfficientNet
+
+# from eye_mouth_data import EyeMouthDataset
+# from utils import init_cuda, pad_tuple, supple_transforms
 
 
-
-
-logger = logging.getLogger(__name__)
+model_names = sorted(name for name in pretrainedmodels.__dict__
+                     if not name.startswith("__")
+                     and name.islower()
+                     and callable(pretrainedmodels.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch Mnist Training')
+parser.add_argument('--data', metavar='DIR', default="path_to_mnist",
+                    help='path to dataset')
+parser.add_argument('--arch', '-a', metavar='ARCH', default='se_resnet50',
+                    choices=model_names,
+                    help='model architecture: ' +
+                         ' | '.join(model_names) +
+                         ' (default: se_resnet50)')
 parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=30, type=int, metavar='N',
@@ -50,12 +66,14 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', default=False,
                     action='store_true', help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', default=False,
                     action='store_true', help='use pre-trained model')
+parser.add_argument('--do-not-preserve-aspect-ratio',
+                    dest='preserve_aspect_ratio',
+                    help='do not preserve the aspect ratio when resizing an image',
+                    action='store_false')
+parser.set_defaults(preserve_aspect_ratio=True)
 parser.add_argument('--gpu', default='', type=str,
                     help='GPU for using.')
 parser.add_argument('--lr-steps', type=str, default='40,70', help='steps of lr changing')
-
-parser.add_argument('--arch', default='dfcnn_tcn', type=str,
-                    help='arch of model.')
 
 best_prec1 = 0
 
@@ -72,15 +90,18 @@ def main():
     args = parser.parse_args()
     utils.init_cuda(args.gpu)
     utils.occumpy_mem(args.gpu, 0.95)
-    print(os.environ["CUDA_VISIBLE_DEVICES"])
     # create model
-    print("=> creating model...")
-    if args.arch == 'dfcnn_tcn':
-        model = DFCNN_TCN(nclass=6, nHidden=512, mode='small')
-    elif args.arch == 'dfcnn_lstm':
-        model = DFCNN_LSTM(nclass=6, nHidden=512, mode='small')
+    print("=> creating model '{}'".format(args.arch))
+    
+    if args.pretrained:
+        print("=> using pre-trained parameters imagenet")
+        model = pretrainedmodels.__dict__[args.arch](num_classes=1000, pretrained='imagenet')
     else:
-        print('error arch, one of [dfcnn_tcn, dfcnn_lstm]')
+        model = pretrainedmodels.__dict__[args.arch](num_classes=1000, pretrained=None)
+
+    dim_feats = model.last_linear.in_features # =2048
+    nb_classes = 6
+    model.last_linear = nn.Linear(dim_feats, nb_classes)
     if args.resume:
         cudnn.benchmark = True
         if os.path.isfile(args.resume):
@@ -99,10 +120,9 @@ def main():
                   .format(args.resume, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
-    model = torch.nn.DataParallel(model).cuda()
+
     cudnn.benchmark = True
 
-    
     train_dataset = WavDataset(is_train=True, augment=True)
 
     train_loader = torch.utils.data.DataLoader(
@@ -137,17 +157,14 @@ def main():
     )
 
     # define loss function (criterion) and optimizer
-    # criterion = nn.CTCLoss(blank=0, reduction='mean').cuda()
-    # criterion = nn.CTCLoss(blank=0, reduction='mean').cuda()
     criterion = nn.CrossEntropyLoss().cuda()
 
-    
+    # optimizer = torch.optim.Adam(model.parameters(), args.lr,
+    #                             weight_decay=args.weight_decay) # 99.56
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                           # betas=(0.5, 0.999))
-    
+
     model = torch.nn.DataParallel(model).cuda()
 
     if args.evaluate:
@@ -283,11 +300,11 @@ def final_validate(test_loader, model, criterion):
 
 def save_checkpoint(state, is_best, epoch):
     global args
-    utils.maybe_makedir('./weights/')
-    filename='./weights/checkpoint_cry_{}-{:0>4}.pth'.format(args.arch, epoch)
+    utils.maybe_makedir('./weights-cnn/')
+    filename='./weights-cnn/checkpoint_cry_{}-{:0>4}.pth'.format(args.arch, epoch)
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, './weights/model_best_cry_{}.pth'.format(args.arch))
+        shutil.copyfile(filename, './weights-cnn/model_best_cry_{}.pth'.format(args.arch))
 
 
 class AverageMeter(object):

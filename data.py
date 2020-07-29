@@ -49,7 +49,7 @@ def getFrequencyFeature(wavsignal, fs):
     return data_input
 
 
-def wav_loader(pth):
+def wav_loader(pth, augment=False):
     with wave.open(pth, 'rb') as wav:
         try:
             num_frame = wav.getnframes() # 获取帧数
@@ -60,6 +60,16 @@ def wav_loader(pth):
             wave_data = np.fromstring(str_data, dtype=np.short) # 将声音文件数据转换为数组矩阵形式
             wave_data.shape = -1, num_channel # 按照声道数将数组整形，单声道时候是一列数组，双声道时候是两列的矩阵
             wave_data = wave_data.T # 将矩阵转置
+            if augment:
+                ttime = num_frame/framerate
+                if ttime > 10:
+                    crop_period = random.randint(8, int(ttime))
+                    start_crop_t_max = ttime - crop_period
+                    start_crop_t = random.random()*start_crop_t_max
+                    end_crop_t = start_crop_t + crop_period
+                    start_crop_f = start_crop_t * framerate
+                    end_crop_f = end_crop_t * framerate
+                    wave_data = wave_data[:, int(start_crop_f): int(end_crop_f)]
             ffimg = getFrequencyFeature(wave_data, framerate)
             return ffimg
         except Exception as e:
@@ -84,8 +94,8 @@ class WavDataset(Dataset):
             wavs = glob.glob(os.path.join(data_root, cry_type, '*.wav'))
             random.seed(2020)
             random.shuffle(wavs)
-            _train_wavs = wavs[:-10]
-            _val_wavs = wavs[-10:]
+            _train_wavs = wavs[:-30]
+            _val_wavs = wavs[-30:]
             self.train_wavs.extend(_train_wavs)
             self.train_labels.extend([_label for _ in range(len(_train_wavs))])
             self.val_wavs.extend(_val_wavs)
@@ -111,7 +121,7 @@ class WavDataset(Dataset):
             sample = self.val_wavs[idx]
             label = self.val_labels[idx]
         
-        ffimg = wav_loader(sample)
+        ffimg = wav_loader(sample, self.augment)
         _path = sample
         if self.augment:
             if np.random.random() > 0.4:
