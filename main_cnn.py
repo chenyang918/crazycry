@@ -169,7 +169,7 @@ def main():
 
     if args.evaluate:
         validate(val_loader, model, criterion)
-        final_validate(test_loader, model, criterion)
+        test(test_loader, model, criterion)
         return
 
     for epoch in range(args.start_epoch, args.epochs):
@@ -277,7 +277,7 @@ def validate(val_loader, model, criterion):
 
         return top1.avg
 
-def final_validate(test_loader, model, criterion):
+def test(test_loader, model, criterion):
     label2name = {0: 'awake', 1: 'diaper', 2: 'hug', 3: 'hungry', 4: 'sleepy', 5: 'uncomfortable'}
     with torch.no_grad():
         # switch to evaluate mode
