@@ -49,7 +49,7 @@ def getFrequencyFeature(wavsignal, fs):
     return data_input
 
 
-def wav_loader(pth, augment=False):
+def wav_loader(pth, period=3, stride=2):
     with wave.open(pth, 'rb') as wav:
         try:
             num_frame = wav.getnframes() # 获取帧数
@@ -60,18 +60,24 @@ def wav_loader(pth, augment=False):
             wave_data = np.fromstring(str_data, dtype=np.short) # 将声音文件数据转换为数组矩阵形式
             wave_data.shape = -1, num_channel # 按照声道数将数组整形，单声道时候是一列数组，双声道时候是两列的矩阵
             wave_data = wave_data.T # 将矩阵转置
-            if augment:
-                ttime = num_frame/framerate
-                if ttime > 10:
-                    crop_period = random.randint(8, int(ttime))
-                    start_crop_t_max = ttime - crop_period
-                    start_crop_t = random.random()*start_crop_t_max
-                    end_crop_t = start_crop_t + crop_period
-                    start_crop_f = start_crop_t * framerate
-                    end_crop_f = end_crop_t * framerate
-                    wave_data = wave_data[:, int(start_crop_f): int(end_crop_f)]
-            ffimg = getFrequencyFeature(wave_data, framerate)
-            return ffimg
+            ttime = num_frame/framerate
+            ffimgs = []
+            if ttime > period:
+                i = 0
+                while i <= ttime - period:
+                    start_crop_f = i * framerate
+                    end_crop_f = (i + period) * framerate
+                    crop_wave_data = wave_data[:, int(start_crop_f): int(end_crop_f)]
+                    crop_ffimg = getFrequencyFeature(crop_wave_data, framerate)
+                    i += stride
+                    ffimgs.append(crop_ffimg)
+                return ffimgs
+            else:
+                ffimg = getFrequencyFeature(wave_data, framerate)
+                # padding
+                ffimg_padding = np.zeros((200, period * 100), dtype=np.float32)
+                ffimg_padding[:, :ffimg.shape[1]] = ffimg.copy()
+                return [ffimg_padding]
         except Exception as e:
             print(e)
             print(pth)
@@ -94,8 +100,8 @@ class WavDataset(Dataset):
             wavs = glob.glob(os.path.join(data_root, cry_type, '*.wav'))
             random.seed(2020)
             random.shuffle(wavs)
-            _train_wavs = wavs[:-30]
-            _val_wavs = wavs[-30:]
+            _train_wavs = wavs[:-20]
+            _val_wavs = wavs[-20:]
             self.train_wavs.extend(_train_wavs)
             self.train_labels.extend([_label for _ in range(len(_train_wavs))])
             self.val_wavs.extend(_val_wavs)
@@ -104,30 +110,55 @@ class WavDataset(Dataset):
         print('all train', len(self.train_wavs), len(self.train_labels))
         print('all val', len(self.val_wavs), len(self.val_labels))
         print('-------------------------------')
+
+        self.train_samples = []
+        self.train_samples_labels = []
+        self.train_samples_paths = []
+        self.val_samples = []
+        self.val_samples_labels = []
+        self.val_samples_paths = []
+        for wav_path, label in tqdm(zip(self.train_wavs, self.train_labels)):
+            _train_sample = wav_loader(wav_path, period=3, stride=1)
+            self.train_samples.extend(_train_sample)
+            self.train_samples_labels.extend([label for _ in range(len(_train_sample))])
+            self.train_samples_paths.extend([wav_path for _ in range(len(_train_sample))])
         
+        print('all train samples', len(self.train_samples), len(self.train_samples_labels), len(self.train_samples_paths))
+
+        for wav_path, label in tqdm(zip(self.val_wavs, self.val_labels)):
+            _val_sample = wav_loader(wav_path, period=3, stride=1)
+            self.val_samples.extend(_val_sample)
+            self.val_samples_labels.extend([label for _ in range(len(_val_sample))])
+            self.val_samples_paths.extend([wav_path for _ in range(len(_val_sample))])
+        
+        print('all val samples', len(self.val_samples), len(self.val_samples_labels), len(self.val_samples_paths))
+
     def __len__(self):
-        assert len(self.train_wavs) == len(self.train_labels)
-        assert len(self.val_wavs) == len(self.val_labels)
+        assert len(self.train_samples) == len(self.train_samples_labels)
+        assert len(self.val_samples) == len(self.val_samples_labels)
         if self.is_train:
-            return len(self.train_wavs)
+            return len(self.train_samples)
         else:
-            return len(self.val_wavs)
+            return len(self.val_samples)
 
     def __getitem__(self, idx):
         if self.is_train:
-            sample = self.train_wavs[idx]
-            label = self.train_labels[idx]
+            ffimg = self.train_samples[idx]
+            label = self.train_samples_labels[idx]
+            _path = self.train_samples_paths[idx]
         else:
-            sample = self.val_wavs[idx]
-            label = self.val_labels[idx]
+            ffimg = self.val_samples[idx]
+            label = self.val_samples_labels[idx]
+            _path = self.val_samples_paths[idx]
         
-        ffimg = wav_loader(sample, self.augment)
-        _path = sample
         if self.augment:
             if np.random.random() > 0.4:
                 ffimg = ffimg[None, :, :]
-                ffimg = spec_augment(mel_spectrogram=ffimg, time_warping_para=30, frequency_masking_para=20,
-                                     time_masking_para=30, frequency_mask_num=1, time_mask_num=1)
+                # ffimg = spec_augment(mel_spectrogram=ffimg, time_warping_para=30, frequency_masking_para=20,
+                                     # time_masking_para=30, frequency_mask_num=1, time_mask_num=1)
+
+                ffimg = spec_augment(mel_spectrogram=ffimg, time_warping_para=50, frequency_masking_para=40,
+                                     time_masking_para=50, frequency_mask_num=2, time_mask_num=2)
                 ffimg = ffimg[0]
         return ffimg, label, _path
 
@@ -140,14 +171,19 @@ class WavTestDataset(Dataset):
         print('-------------------------------')
         wavs = os.listdir(data_root)
         self.wavs = [os.path.join(data_root, wav_name) for wav_name in wavs]
+        self.samples = []
+        self.samples_paths = []
+        for wav_path in self.wavs:
+            _sample = wav_loader(wav_path, period=3, stride=1)
+            self.samples.extend(_sample)
+            self.samples_paths.extend([wav_path for _ in range(len(_sample))])
         
     def __len__(self):
-        return len(self.wavs)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.wavs[idx]
-        ffimg = wav_loader(sample)
-        _path = sample
+        ffimg = self.samples[idx]
+        _path = self.samples_paths[idx]
         return ffimg, _path
 
 if __name__ == '__main__':
